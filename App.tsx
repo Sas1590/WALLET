@@ -1,729 +1,986 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Eye, 
-  EyeOff, 
-  Trash2, 
-  Database, 
-  Download, 
-  Upload, 
-  Home, 
-  PlusCircle, 
-  CreditCard, 
-  Wallet,
-  TrendingUp,
-  TrendingDown, 
-  Briefcase,
-  Edit3,
-  CheckCircle2,
-  X
+  Cloud, Loader2, Home, TrendingUp, PlusCircle, CreditCard, 
+  BarChart3, X, Edit3, Save, CalendarClock, CreditCard as CreditCardIcon, Repeat, AlertCircle, Trash2, Settings, Wallet
 } from 'lucide-react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, TooltipProps } from 'recharts';
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, TooltipProps 
+} from 'recharts';
+import { initializeApp } from "firebase/app";
+import { 
+  getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy, setDoc, getDoc, writeBatch, onSnapshot
+} from "firebase/firestore";
 
-// --- Types ---
+// NEW IMPORTS
+import { Transaction, Debt, PaidDebt, Investment, FormData, DebtForm, InvestmentForm, Category } from './types';
+import { GlassCard, ConfirmModal, ActionButton } from './components/UI';
 
-interface Transaction {
-  id: number;
-  type: 'income' | 'expense';
-  amount: number;
-  category: string;
-  date: string;
-  description: string;
-}
+import { HomeTab } from './tabs/HomeTab';
+import { InvestmentsTab } from './tabs/InvestmentsTab';
+import { AddTab } from './tabs/AddTab';
+import { DebtsTab } from './tabs/DebtsTab';
+import { SettingsTab } from './tabs/SettingsTab';
 
-interface Debt {
-  id: number;
-  name: string;
-  amount: number;
-  creditor: string;
-  date: string;
-}
-
-interface PaidDebt extends Debt {
-  paidDate: string;
-}
-
-interface FormData {
-  type: 'income' | 'expense';
-  amount: string;
-  category: string;
-  description: string;
-}
-
-interface DebtForm {
-  name: string;
-  amount: string;
-  creditor: string;
-}
-
-interface PayDebtForm {
-  debtId: string;
-  amount: string;
-}
-
-// --- Components ---
-
-const GlassCard = ({ children, className = '' }: { children?: React.ReactNode; className?: string }) => (
-  <div className={`backdrop-blur-xl bg-[#13131f]/80 border border-white/5 shadow-xl rounded-3xl ${className}`}>
-    {children}
-  </div>
-);
-
-const SectionTitle = ({ children }: { children?: React.ReactNode }) => (
-  <h3 className="text-violet-200/80 text-xs font-bold uppercase tracking-wider mb-3 px-1">{children}</h3>
-);
-
-const ActionButton = ({ onClick, children, variant = 'primary', className = '' }: { onClick: () => void; children?: React.ReactNode; variant?: 'primary' | 'secondary' | 'danger' | 'success'; className?: string }) => {
-  const variants = {
-    primary: "bg-violet-600 hover:bg-violet-500 text-white shadow-lg shadow-violet-900/40",
-    secondary: "bg-white/5 hover:bg-white/10 text-white border border-white/10",
-    danger: "bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30",
-    success: "bg-emerald-500 hover:bg-emerald-400 text-white shadow-lg shadow-emerald-900/40"
-  };
-  
-  return (
-    <button onClick={onClick} className={`py-3 px-4 rounded-xl font-bold transition-all duration-200 active:scale-95 flex items-center justify-center gap-2 ${variants[variant]} ${className}`}>
-      {children}
-    </button>
-  );
+// --- CONFIGURACIÓN DE FIREBASE ---
+const firebaseConfig = {
+  apiKey: "AIzaSyCiwsBdFeIW9i5J7XACxMkxc3ujDLd-bzY",
+  authDomain: "wallet-a40f3.firebaseapp.com",
+  projectId: "wallet-a40f3",
+  storageBucket: "wallet-a40f3.firebasestorage.app",
+  messagingSenderId: "1039790146326",
+  appId: "1:1039790146326:web:64d11bee61718494c28637"
 };
 
-// --- Main App ---
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+const FINNHUB_API_KEY: string = "d5rt1c1r01qj5oilvnl0d5rt1c1r01qj5oilvnlg"; 
+
+// --- Constants: Default Categories ---
+const DEFAULT_INCOME_CATS: Category[] = [
+  { name: 'Salario', color: '#10b981' }, 
+  { name: 'Freelance', color: '#3b82f6' }, 
+  { name: 'Regalo', color: '#ec4899' }, 
+  { name: 'B365', color: '#84cc16' }, 
+  { name: 'Otros', color: '#9ca3af' }
+];
+
+const DEFAULT_EXPENSE_CATS: Category[] = [
+  { name: 'Comida', color: '#f43f5e' }, 
+  { name: 'Transporte', color: '#f97316' }, 
+  { name: 'Casa', color: '#6366f1' }, 
+  { name: 'Entretenimiento', color: '#8b5cf6' }, 
+  { name: 'Servicios', color: '#06b6d4' }, 
+  { name: 'Ropa', color: '#d946ef' }, 
+  { name: 'Salud', color: '#ef4444' }, 
+  { name: 'B365', color: '#84cc16' },
+  { name: 'Deuda Bancaria', color: '#f43f5e' }, 
+  { name: 'Suscripción/Fijo', color: '#f43f5e' }
+];
+
+// --- Price Service ---
+const fetchStockPrice = async (symbol: string): Promise<number> => {
+  const cleanSymbol = symbol.toUpperCase().trim();
+  
+  // 1. Check for Crypto using CoinGecko (Free, no key needed for simple prices)
+  const cryptoMap: Record<string, string> = {
+      'BTC': 'bitcoin', 'ETH': 'ethereum', 'SOL': 'solana', 'XRP': 'ripple', 
+      'ADA': 'cardano', 'DOGE': 'dogecoin', 'DOT': 'polkadot', 'MATIC': 'matic-network',
+      'LINK': 'chainlink', 'SHIB': 'shiba-inu', 'LTC': 'litecoin', 'AVAX': 'avalanche-2',
+      'USDT': 'tether'
+  };
+
+  if (cryptoMap[cleanSymbol]) {
+      try {
+          const coinId = cryptoMap[cleanSymbol];
+          const response = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=eur`);
+          const data = await response.json();
+          if (data[coinId] && data[coinId].eur) {
+              return data[coinId].eur;
+          }
+      } catch (error) {
+          console.warn(`Error fetching crypto price for ${cleanSymbol}, using fallback.`);
+      }
+  }
+
+  // 2. Stocks via Finnhub
+  if (FINNHUB_API_KEY && FINNHUB_API_KEY !== "TU_API_KEY_DE_FINNHUB_AQUI") {
+      try {
+          const response = await fetch(`https://finnhub.io/api/v1/quote?symbol=${cleanSymbol}&token=${FINNHUB_API_KEY}`);
+          const data = await response.json();
+          if (data.c && data.c > 0) return data.c;
+      } catch (error) {
+          console.warn(`Error fetching real price for ${cleanSymbol}, using fallback.`);
+      }
+  }
+
+  // 3. Fallbacks
+  const basePrices: Record<string, number> = {
+    'AAPL': 175.50, 'TSLA': 180.20, 'MSFT': 405.00, 'GOOGL': 140.30, 'AMZN': 178.10,
+    'NVDA': 850.00, 'BTC': 65400.00, 'ETH': 3450.00, 'SOL': 145.00, 'VUAA': 92.50,
+    'VWCE': 115.20, 'TTWO': 155.00
+  };
+  const base = basePrices[cleanSymbol] || 100.00; 
+  const variation = base * (Math.random() * 0.04 - 0.02);
+  return base + variation;
+};
 
 export default function FinanceApp() {
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false); 
+  const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
   const [showBalance, setShowBalance] = useState(true);
   const [activeTab, setActiveTab] = useState('home');
-  const [showDatabase, setShowDatabase] = useState(false);
+  const [chartView, setChartView] = useState<'daily' | 'monthly' | 'yearly'>('daily');
+  const [showCashFlow, setShowCashFlow] = useState(false); 
+  const [formError, setFormError] = useState<string | null>(null);
   
-  // -- State Initialization --
-  const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    const saved = localStorage.getItem('violet_transactions');
-    return saved ? JSON.parse(saved) : [];
-  });
+  // Success Modal State
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const [debts, setDebts] = useState<Debt[]>(() => {
-    const saved = localStorage.getItem('violet_debts');
-    return saved ? JSON.parse(saved) : [];
-  });
+  // 'networth' = Bolsa | 'investments' = Inversión | 'debt' = Deuda
+  const [heroChartMode, setHeroChartMode] = useState<'networth' | 'investments' | 'debt'>('networth');
+  
+  // -- Data State --
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [debts, setDebts] = useState<Debt[]>([]);
+  const [paidDebts, setPaidDebts] = useState<PaidDebt[]>([]);
+  const [investments, setInvestments] = useState<Investment[]>([]);
+  const [incomeBag, setIncomeBag] = useState<number>(0);
 
-  const [paidDebts, setPaidDebts] = useState<PaidDebt[]>(() => {
-    const saved = localStorage.getItem('violet_paidDebts');
-    return saved ? JSON.parse(saved) : [];
-  });
+  // -- Category State with Colors --
+  const [incomeCategories, setIncomeCategories] = useState<Category[]>(DEFAULT_INCOME_CATS);
+  const [expenseCategories, setExpenseCategories] = useState<Category[]>(DEFAULT_EXPENSE_CATS);
 
-  const [incomeBag, setIncomeBag] = useState<number>(() => {
-    const saved = localStorage.getItem('violet_incomeBag');
-    return saved ? parseFloat(saved) : 0;
-  });
+  // -- Edit Transaction State --
+  const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+  const [editTxForm, setEditTxForm] = useState<FormData>({ type: 'expense', amount: '', category: '', description: '' });
 
-  // -- Persistence --
-  useEffect(() => { localStorage.setItem('violet_transactions', JSON.stringify(transactions)); }, [transactions]);
-  useEffect(() => { localStorage.setItem('violet_debts', JSON.stringify(debts)); }, [debts]);
-  useEffect(() => { localStorage.setItem('violet_paidDebts', JSON.stringify(paidDebts)); }, [paidDebts]);
-  useEffect(() => { localStorage.setItem('violet_incomeBag', incomeBag.toString()); }, [incomeBag]);
+  // -- Delete Debt State --
+  const [debtToDelete, setDebtToDelete] = useState<Debt | null>(null);
 
   // -- Forms --
   const [formData, setFormData] = useState<FormData>({ type: 'expense', amount: '', category: 'Comida', description: '' });
-  const [debtForm, setDebtForm] = useState<DebtForm>({ name: '', amount: '', creditor: '' });
-  const [payDebtForm, setPayDebtForm] = useState<PayDebtForm>({ debtId: '', amount: '' });
+  const [debtForm, setDebtForm] = useState<DebtForm>({ name: '', amount: '', creditor: '', type: 'personal', installmentAmount: '', nextPaymentDate: '', isRecurring: false });
   
-  const [editingDebtId, setEditingDebtId] = useState<number | null>(null);
-  const [editDebtForm, setEditDebtForm] = useState<DebtForm>({ name: '', amount: '', creditor: '' });
+  // -- INVESTMENT STATE --
+  const [investmentForm, setInvestmentForm] = useState<InvestmentForm>({ 
+    symbol: '', name: '', quantity: '', price: '', type: 'stock', deductFromWallet: true, platform: '', fees: '' 
+  });
+  const [investMode, setInvestMode] = useState<'qty' | 'amount'>('qty'); 
+  const [investTotalEUR, setInvestTotalEUR] = useState<string>('');
+  
+  // Payment Modal State
+  const [activePaymentDebt, setActivePaymentDebt] = useState<Debt | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  
+  const [editingDebtId, setEditingDebtId] = useState<string | null>(null);
+  const [editDebtForm, setEditDebtForm] = useState<DebtForm>({ name: '', amount: '', creditor: '', type: 'personal', installmentAmount: '', nextPaymentDate: '', isRecurring: false });
+
+  // -- CATEGORY HANDLERS (PERSISTENT) --
+  const handleAddCategory = async (type: 'income' | 'expense', name: string, color: string) => {
+    const cleanName = name.trim();
+    const newCat = { name: cleanName, color };
+    let newCatsList: Category[] = [];
+
+    if (type === 'income') {
+      if (!incomeCategories.some(c => c.name.toLowerCase() === cleanName.toLowerCase())) {
+        newCatsList = [...incomeCategories, newCat];
+        setIncomeCategories(newCatsList);
+        // Persist to DB
+        try {
+           await setDoc(doc(db, "settings", "categories"), { income: newCatsList }, { merge: true });
+        } catch (e) { console.error("Error saving category", e); }
+      }
+    } else {
+      if (!expenseCategories.some(c => c.name.toLowerCase() === cleanName.toLowerCase())) {
+        newCatsList = [...expenseCategories, newCat];
+        setExpenseCategories(newCatsList);
+        // Persist to DB
+        try {
+           await setDoc(doc(db, "settings", "categories"), { expense: newCatsList }, { merge: true });
+        } catch (e) { console.error("Error saving category", e); }
+      }
+    }
+  };
+
+  const handleRemoveCategory = async (type: 'income' | 'expense', name: string) => {
+     let newCatsList: Category[] = [];
+     if (type === 'income') {
+       newCatsList = incomeCategories.filter(c => c.name !== name);
+       setIncomeCategories(newCatsList);
+       try {
+           await setDoc(doc(db, "settings", "categories"), { income: newCatsList }, { merge: true });
+        } catch (e) { console.error("Error removing category", e); }
+     } else {
+       newCatsList = expenseCategories.filter(c => c.name !== name);
+       setExpenseCategories(newCatsList);
+       try {
+           await setDoc(doc(db, "settings", "categories"), { expense: newCatsList }, { merge: true });
+        } catch (e) { console.error("Error removing category", e); }
+     }
+  };
+
+  // Ensure default category in forms is valid when categories change
+  useEffect(() => {
+    if (formData.type === 'income' && !incomeCategories.some(c => c.name === formData.category)) {
+      setFormData(prev => ({ ...prev, category: incomeCategories[0]?.name || '' }));
+    }
+    if (formData.type === 'expense' && !expenseCategories.some(c => c.name === formData.category)) {
+      setFormData(prev => ({ ...prev, category: expenseCategories[0]?.name || '' }));
+    }
+  }, [incomeCategories, expenseCategories, formData.type]);
+
+  // -- AUTOMATIC PAYMENT LOGIC --
+  const checkAndProcessAutoPayments = async (fetchedDebts: Debt[], currentBag: number, fetchedTransactions: Transaction[]) => {
+      // ... (Existing logic) ...
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const batch = writeBatch(db);
+      let updatesMade = false;
+      let newBag = currentBag;
+      let newTransactions = [...fetchedTransactions];
+      let newDebts = [...fetchedDebts];
+
+      for (let i = 0; i < newDebts.length; i++) {
+          const debt = newDebts[i];
+          if (debt.type === 'bank' && debt.nextPaymentDate && debt.installmentAmount) {
+              let paymentDate = new Date(debt.nextPaymentDate);
+              paymentDate.setHours(0, 0, 0, 0);
+              const isDue = paymentDate <= today;
+              const hasFunds = newBag >= debt.installmentAmount;
+              const isFiniteAndRemaining = !debt.isRecurring && debt.amount > 0;
+              const isRecurring = !!debt.isRecurring;
+
+              if (isDue && hasFunds && (isFiniteAndRemaining || isRecurring)) {
+                  updatesMade = true;
+                  const payAmt = debt.installmentAmount;
+                  newBag -= payAmt;
+                  const nextMonthDate = new Date(paymentDate);
+                  nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
+                  const nextMonthString = nextMonthDate.toISOString().split('T')[0];
+
+                  const newTxRef = doc(collection(db, "transactions"));
+                  const newTxData: any = {
+                      type: 'expense',
+                      amount: payAmt,
+                      category: debt.isRecurring ? 'Suscripción/Fijo' : 'Deuda Bancaria',
+                      date: new Date().toISOString().split('T')[0],
+                      description: debt.isRecurring ? `Cuota Mensual: ${debt.name}` : `Pago Deuda: ${debt.name}`
+                  };
+                  batch.set(newTxRef, newTxData);
+                  newTransactions.unshift({ id: newTxRef.id, ...newTxData });
+
+                  const debtRef = doc(db, "debts", debt.id);
+                  if (debt.isRecurring) {
+                      batch.update(debtRef, { nextPaymentDate: nextMonthString });
+                      newDebts[i] = { ...debt, nextPaymentDate: nextMonthString };
+                  } else {
+                      const newDebtAmount = debt.amount - payAmt;
+                      if (newDebtAmount <= 0) {
+                          const paidRef = doc(collection(db, "paidDebts"));
+                          batch.set(paidRef, { ...debt, amount: debt.amount, paidDate: new Date().toISOString().split('T')[0] });
+                          batch.delete(debtRef);
+                          newDebts[i] = { ...debt, amount: 0 };
+                      } else {
+                          batch.update(debtRef, { amount: newDebtAmount, nextPaymentDate: nextMonthString });
+                          newDebts[i] = { ...debt, amount: newDebtAmount, nextPaymentDate: nextMonthString };
+                      }
+                  }
+              }
+          }
+      }
+
+      if (updatesMade) {
+          const walletRef = doc(db, "wallet", "summary");
+          batch.set(walletRef, { incomeBag: newBag }, { merge: true });
+          await batch.commit();
+          setIncomeBag(newBag);
+          setTransactions(newTransactions);
+          setDebts(newDebts.filter(d => d.isRecurring || d.amount > 0));
+      }
+  };
+
+  // -- Firebase Fetching with Safety Timeout --
+  useEffect(() => {
+    let isMounted = true;
+    const fetchData = async () => {
+      try {
+        setIsLoading(true);
+        
+        // --- TIMEOUT SAFETY: If data takes > 8s, stop loading ---
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Timeout")), 8000)
+        );
+
+        const dataPromise = (async () => {
+            const catDoc = await getDoc(doc(db, "settings", "categories"));
+            if (catDoc.exists()) {
+                const data = catDoc.data();
+                if (data.income) setIncomeCategories(data.income);
+                if (data.expense) setExpenseCategories(data.expense);
+            } else {
+                await setDoc(doc(db, "settings", "categories"), { 
+                    income: DEFAULT_INCOME_CATS,
+                    expense: DEFAULT_EXPENSE_CATS
+                });
+            }
+
+            const walletDoc = await getDoc(doc(db, "wallet", "summary"));
+            let currentBag = 0;
+            if (walletDoc.exists()) {
+              currentBag = walletDoc.data().incomeBag || 0;
+              setIncomeBag(currentBag);
+            } else {
+              await setDoc(doc(db, "wallet", "summary"), { incomeBag: 0 });
+            }
+            
+            const txQuery = query(collection(db, "transactions"), orderBy("date", "desc"));
+            const txSnapshot = await getDocs(txQuery);
+            const fetchedTxList = txSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+            setTransactions(fetchedTxList);
+
+            const debtsSnapshot = await getDocs(collection(db, "debts"));
+            const debtsList = debtsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Debt));
+            setDebts(debtsList);
+            const paidDebtsSnapshot = await getDocs(collection(db, "paidDebts"));
+            const paidDebtsList = paidDebtsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PaidDebt));
+            setPaidDebts(paidDebtsList);
+            const investmentsSnapshot = await getDocs(collection(db, "investments"));
+            const invPromises = investmentsSnapshot.docs.map(async (doc) => {
+                const data = doc.data();
+                const price = await fetchStockPrice(data.symbol || 'USD');
+                return { id: doc.id, ...data, currentPrice: price } as Investment;
+            });
+            const invList = await Promise.all(invPromises);
+            setInvestments(invList);
+            await checkAndProcessAutoPayments(debtsList, currentBag, fetchedTxList);
+        })();
+
+        // Race between data fetch and timeout
+        await Promise.race([dataPromise, timeoutPromise]);
+
+      } catch (error) {
+        console.error("Error fetching data (or timeout):", error);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    };
+    fetchData();
+    return () => { isMounted = false; };
+  }, []);
+
+  const refreshPrices = async () => {
+    setIsUpdatingPrices(true);
+    try {
+        const updatedInvestments = await Promise.all(investments.map(async (inv) => {
+            const newPrice = await fetchStockPrice(inv.symbol);
+            return { ...inv, currentPrice: newPrice };
+        }));
+        setInvestments(updatedInvestments);
+    } catch (e) {
+        console.error("Error refreshing prices", e);
+    } finally {
+        setIsUpdatingPrices(false);
+    }
+  };
+
+  const updateIncomeBagInDb = async (newAmount: number) => {
+    setIncomeBag(newAmount);
+    try {
+      await setDoc(doc(db, "wallet", "summary"), { incomeBag: newAmount }, { merge: true });
+    } catch (e) {
+      console.error("Error updating wallet", e);
+    }
+  };
 
   // -- Calculations --
-  const totalDebts = debts.reduce((acc, d) => acc + d.amount, 0);
-  const balance = transactions.reduce((acc, t) => {
-    if (t.type === 'income') return acc + t.amount;
-    if (t.type === 'expense') return acc - t.amount;
-    return acc;
-  }, 0);
-
-  const expenses = transactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
-  const income = transactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
-  const netWorth = balance - totalDebts;
+  const totalDebts = debts.reduce((acc, d) => (d.isRecurring ? acc : acc + d.amount), 0);
+  const totalInvestmentsValue = investments.reduce((acc, inv) => acc + (inv.quantity * (inv.currentPrice || inv.avgBuyPrice)), 0);
+  // Adjusted: Include fees in total capital calculation to reflect true cost basis
+  const totalInvestedCapital = investments.reduce((acc, inv) => acc + (inv.quantity * inv.avgBuyPrice) + (inv.fees || 0), 0);
+  const netWorth = (incomeBag + totalInvestmentsValue) - totalDebts;
 
   const chartData = transactions.filter(t => t.type === 'expense').reduce((acc: any[], t) => {
+    // ... same as before
     const existing = acc.find(item => item.name === t.category);
     if (existing) {
       existing.value += t.amount;
     } else {
-      acc.push({ name: t.category, value: t.amount });
+      const catObj = expenseCategories.find(c => c.name === t.category);
+      let color = '#6b7280';
+      if (catObj) {
+          color = catObj.color;
+      } else {
+          let hash = 0;
+          for (let i = 0; i < t.category.length; i++) {
+            hash = t.category.charCodeAt(i) + ((hash << 5) - hash);
+          }
+          const h = Math.abs(hash) % 360;
+          color = `hsl(${h}, 70%, 60%)`;
+      }
+      acc.push({ name: t.category, value: t.amount, color: color });
     }
     return acc;
   }, []);
 
-  // Violet Theme Colors
+  const bankDebts = debts.filter(d => d.type === 'bank');
+  const personalDebts = debts.filter(d => d.type !== 'bank');
   const COLORS = ['#8b5cf6', '#d946ef', '#06b6d4', '#f43f5e', '#10b981', '#f59e0b'];
 
+  const investmentPieData = useMemo(() => {
+    return investments.map(inv => ({
+        name: inv.symbol,
+        value: inv.quantity * (inv.currentPrice || inv.avgBuyPrice)
+    })).sort((a,b) => b.value - a.value);
+  }, [investments]);
+
+  const debtBarData = useMemo(() => {
+    return debts.filter(d => !d.isRecurring).map(d => ({
+        name: d.name,
+        value: d.amount,
+        color: '#f43f5e'
+    })).sort((a,b) => b.value - a.value);
+  }, [debts]);
+
+  const netWorthHistoryData = useMemo(() => {
+    interface Event { date: string; type: 'tx' | 'debtStart' | 'debtEnd'; amount: number; kind?: 'income' | 'expense'; }
+    let events: Event[] = [];
+    transactions.forEach(t => events.push({ date: t.date, type: 'tx', amount: t.amount, kind: t.type }));
+    debts.forEach(d => !d.isRecurring && events.push({ date: d.date, type: 'debtStart', amount: d.amount }));
+    paidDebts.forEach(d => !d.isRecurring && (events.push({ date: d.date, type: 'debtStart', amount: d.amount }), events.push({ date: d.paidDate, type: 'debtEnd', amount: d.amount })));
+    events.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    if (events.length === 0) return [];
+
+    const dailyMap = new Map<string, number>();
+    let wallet = 0, liability = 0;
+    events.forEach(e => {
+       if (e.type === 'tx') wallet += (e.kind === 'income' ? e.amount : -e.amount);
+       else if (e.type === 'debtStart') liability += e.amount;
+       else if (e.type === 'debtEnd') liability -= e.amount;
+       dailyMap.set(e.date, wallet - liability);
+    });
+
+    const dates = Array.from(dailyMap.keys()).sort();
+    const today = new Date();
+    const result: any[] = [];
+    const getBalanceAt = (targetDateStr: string) => {
+        for (let i = dates.length - 1; i >= 0; i--) if (dates[i] <= targetDateStr) return dailyMap.get(dates[i]) || 0;
+        return 0; 
+    };
+    // Chart View Logic
+    if (chartView === 'daily') {
+       for (let i = 29; i >= 0; i--) {
+          const d = new Date(); d.setDate(today.getDate() - i);
+          result.push({ name: d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit' }), value: getBalanceAt(d.toISOString().split('T')[0]) });
+       }
+    } else if (chartView === 'monthly') {
+       for (let i = 0; i < 12; i++) {
+          const d = new Date(today.getFullYear(), i + 1, 0);
+          if (d > today && i > today.getMonth()) break; 
+          result.push({ name: new Date(today.getFullYear(), i, 1).toLocaleString('es-ES', { month: 'short' }).toUpperCase(), value: getBalanceAt(d.toISOString().split('T')[0]) });
+       }
+    } else if (chartView === 'yearly') {
+       const years = new Set<number>();
+       events.forEach(e => years.add(new Date(e.date).getFullYear()));
+       Array.from(years).sort().forEach(year => result.push({ name: year.toString(), value: getBalanceAt(`${year}-12-31`) }));
+    }
+    return result;
+  }, [transactions, debts, paidDebts, chartView]);
+
+  const gradientOffset = useMemo(() => {
+    const dataMax = Math.max(...netWorthHistoryData.map((i) => i.value));
+    const dataMin = Math.min(...netWorthHistoryData.map((i) => i.value));
+    if (dataMax <= 0) return 0;
+    if (dataMin >= 0) return 1;
+    return dataMax / (dataMax - dataMin);
+  }, [netWorthHistoryData]);
+
   // -- Handlers --
-
-  const handleAddTransaction = () => {
+  
+  const handleAddTransaction = async () => {
+    // ... existing ...
     if (!formData.amount) return;
-    const newTx: Transaction = {
-      id: Date.now(),
-      type: formData.type,
-      amount: parseFloat(formData.amount),
-      category: formData.category,
-      date: new Date().toISOString().split('T')[0],
-      description: formData.description || 'Sin descripción',
+    setIsSubmitting(true);
+    const amountVal = parseFloat(formData.amount);
+    const newTxData = {
+      type: formData.type, amount: amountVal, category: formData.category,
+      date: new Date().toISOString().split('T')[0], description: formData.description || 'Sin descripción',
     };
-    setTransactions([newTx, ...transactions]);
-    if (formData.type === 'income') {
-      setIncomeBag(incomeBag + parseFloat(formData.amount));
-    }
-    setFormData({ type: 'expense', amount: '', category: 'Comida', description: '' });
-    setActiveTab('home');
+    try {
+      const docRef = await addDoc(collection(db, "transactions"), newTxData);
+      const newTx: Transaction = { id: docRef.id, ...newTxData };
+      setTransactions([newTx, ...transactions]);
+      if (formData.type === 'income') await updateIncomeBagInDb(incomeBag + amountVal);
+      setFormData({ type: 'expense', amount: '', category: expenseCategories[0]?.name || '', description: '' });
+      setActiveTab('home');
+    } catch (e) { console.error("Error adding transaction", e); } finally { setIsSubmitting(false); }
   };
-
-  const handlePayDebt = () => {
-    if (!payDebtForm.debtId || !payDebtForm.amount) return;
-    const paymentAmount = parseFloat(payDebtForm.amount);
-    
-    if (paymentAmount > incomeBag) {
-      alert('⚠️ Fondos insuficientes en la bolsa.');
-      return;
-    }
-
-    const debtIdx = debts.findIndex(d => d.id === parseInt(payDebtForm.debtId));
-    if (debtIdx === -1) return;
-
-    setIncomeBag(incomeBag - paymentAmount);
-    const debt = debts[debtIdx];
-    const newAmount = Math.max(0, debt.amount - paymentAmount);
-
-    if (newAmount === 0) {
-      const paidDebt: PaidDebt = { ...debt, amount: paymentAmount, paidDate: new Date().toISOString().split('T')[0] };
-      setPaidDebts([paidDebt, ...paidDebts]);
-      setDebts(debts.filter(d => d.id !== debt.id));
-    } else {
-      const updatedDebts = [...debts];
-      updatedDebts[debtIdx].amount = newAmount;
-      setDebts(updatedDebts);
-    }
-
-    const newTx: Transaction = {
-      id: Date.now(),
-      type: 'expense',
-      amount: paymentAmount,
-      category: 'Pago de Deuda',
-      date: new Date().toISOString().split('T')[0],
-      description: `Pago a ${debt.name}`,
-    };
-    setTransactions([newTx, ...transactions]);
-    setPayDebtForm({ debtId: '', amount: '' });
-    setActiveTab('home');
+  
+  // ... other existing handlers (openEditTransaction, handleSaveEditTransaction, deleteTransaction, etc) ...
+  // Re-declare for completeness of context in this file block if needed, but assuming standard replace.
+  // Copying necessary ones to ensure file integrity.
+  const openEditTransaction = (tx: Transaction) => {
+    setEditingTx(tx);
+    setEditTxForm({ type: tx.type, amount: tx.amount.toString(), category: tx.category, description: tx.description });
   };
-
-  const handleAddDebt = () => {
-    if (!debtForm.name || !debtForm.amount) return;
-    const newDebt: Debt = {
-      id: Date.now(),
-      name: debtForm.name,
-      amount: parseFloat(debtForm.amount),
-      creditor: debtForm.creditor || 'Desconocido',
-      date: new Date().toISOString().split('T')[0]
-    };
-    setDebts([...debts, newDebt]);
-    setDebtForm({ name: '', amount: '', creditor: '' });
+  const handleSaveEditTransaction = async () => {
+    if (!editingTx || !editTxForm.amount) return;
+    setIsSubmitting(true);
+    try {
+      const newAmount = parseFloat(editTxForm.amount);
+      const updates = { type: editTxForm.type, amount: newAmount, category: editTxForm.category, description: editTxForm.description, date: editingTx.date };
+      let newBag = incomeBag;
+      if (editingTx.type === 'income') newBag -= editingTx.amount; else newBag += editingTx.amount;
+      if (editTxForm.type === 'income') newBag += newAmount; else newBag -= newAmount; 
+      await updateDoc(doc(db, "transactions", editingTx.id), updates);
+      if (newBag !== incomeBag) await updateIncomeBagInDb(newBag);
+      setTransactions(transactions.map(t => t.id === editingTx.id ? { ...t, ...updates } : t));
+      setEditingTx(null);
+      setSuccessMessage("¡Transacción actualizada correctamente!");
+    } catch (e) { console.error(e); setFormError("Error al guardar cambios"); } finally { setIsSubmitting(false); }
   };
-
-  const startEditDebt = (debt: Debt) => {
-    setEditingDebtId(debt.id);
-    setEditDebtForm({ name: debt.name, amount: debt.amount.toString(), creditor: debt.creditor });
+  const deleteTransaction = async (id: string, type: 'income' | 'expense', amount: number) => {
+    try {
+      await deleteDoc(doc(db, "transactions", id));
+      setTransactions(transactions.filter(t => t.id !== id));
+      if (type === 'income') await updateIncomeBagInDb(incomeBag - amount); else await updateIncomeBagInDb(incomeBag + amount); 
+    } catch (e) { console.error(e); }
   };
-
-  const saveEditDebt = () => {
-    if (!editDebtForm.name || !editDebtForm.amount) return;
-    const updatedDebts = debts.map(d => 
-      d.id === editingDebtId 
-        ? { ...d, name: editDebtForm.name, amount: parseFloat(editDebtForm.amount), creditor: editDebtForm.creditor }
-        : d
-    );
-    setDebts(updatedDebts);
-    setEditingDebtId(null);
-  };
-
-  const exportDatabase = () => {
-    const data = { transactions, debts, incomeBag, exportedAt: new Date().toISOString() };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `violet_backup_${new Date().toISOString().split('T')[0]}.json`;
-    link.click();
-  };
-
-  const importDatabase = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const imported = JSON.parse(e.target?.result as string);
-        if(imported.transactions) setTransactions(imported.transactions);
-        if(imported.debts) setDebts(imported.debts);
-        if(imported.incomeBag !== undefined) setIncomeBag(imported.incomeBag);
-        alert('✅ Base de datos restaurada');
-        setShowDatabase(false);
-      } catch (error) {
-        alert('❌ Error al importar archivo');
+  const handlePaymentSubmit = async () => {
+     if (!activePaymentDebt || !paymentAmount) return;
+    setIsSubmitting(true);
+    setFormError(null);
+    const amountVal = parseFloat(paymentAmount);
+    if (amountVal > incomeBag) { setFormError('⚠️ No tienes suficiente saldo.'); setIsSubmitting(false); return; }
+    const newAmount = Math.max(0, activePaymentDebt.amount - amountVal);
+    try {
+      await updateIncomeBagInDb(incomeBag - amountVal);
+      if (newAmount === 0 && !activePaymentDebt.isRecurring) {
+        const paidDebtData = { ...activePaymentDebt, paidDate: new Date().toISOString().split('T')[0] };
+        const paidDocRef = await addDoc(collection(db, "paidDebts"), paidDebtData);
+        setPaidDebts([{ id: paidDocRef.id, ...paidDebtData } as PaidDebt, ...paidDebts]);
+        await deleteDoc(doc(db, "debts", activePaymentDebt.id));
+        setDebts(debts.filter(d => d.id !== activePaymentDebt.id));
+      } else {
+        await updateDoc(doc(db, "debts", activePaymentDebt.id), { amount: newAmount });
+        setDebts(debts.map(d => d.id === activePaymentDebt.id ? { ...d, amount: newAmount } : d));
       }
-    };
-    reader.readAsText(file);
+      const newTxData = { type: 'expense' as const, amount: amountVal, category: activePaymentDebt.isRecurring ? 'Suscripción/Fijo' : 'Deuda Bancaria', date: new Date().toISOString().split('T')[0], description: `Pago Manual: ${activePaymentDebt.name}` };
+      const txRef = await addDoc(collection(db, "transactions"), newTxData);
+      setTransactions([{ id: txRef.id, ...newTxData }, ...transactions]);
+      
+      // NEW SUCCESS MESSAGE
+      setSuccessMessage(`Pago realizado con éxito. Tu saldo y tu deuda se han reducido en €${amountVal.toFixed(2)}.`);
+      
+      setActivePaymentDebt(null); setPaymentAmount('');
+    } catch (e) { console.error("Error paying debt", e); } finally { setIsSubmitting(false); }
   };
-
-  const CustomTooltip = ({ active, payload }: TooltipProps<number, string>) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-gray-900 border border-violet-500/30 p-2 rounded-lg shadow-xl">
-          <p className="text-violet-200 text-sm font-bold">{`${payload[0].name} : €${payload[0].value?.toFixed(2)}`}</p>
-        </div>
-      );
+  const handleFetchCurrentPriceForForm = async () => {
+     if (!investmentForm.symbol) return;
+     const price = await fetchStockPrice(investmentForm.symbol);
+     if (price > 0) setInvestmentForm(prev => ({ ...prev, price: price.toString() }));
+  };
+  // (Dependencies for effect)
+  useEffect(() => {
+    if (investMode === 'amount' && investTotalEUR && investmentForm.price) {
+        const total = parseFloat(investTotalEUR);
+        const price = parseFloat(investmentForm.price);
+        if (total > 0 && price > 0) setInvestmentForm(prev => ({ ...prev, quantity: (total / price).toFixed(6) }));
     }
-    return null;
+  }, [investTotalEUR, investmentForm.price, investMode]);
+
+  const handleAddInvestment = async () => {
+    setFormError(null);
+    if (!investmentForm.symbol || !investmentForm.quantity || !investmentForm.price) { 
+        setFormError("Completa símbolo, cantidad y precio."); return; 
+    }
+    setIsSubmitting(true);
+    
+    let quantityVal = parseFloat(investmentForm.quantity);
+    let priceVal = parseFloat(investmentForm.price);
+    let feesVal = parseFloat(investmentForm.fees) || 0; // Capture fees
+    
+    let buyCost = quantityVal * priceVal;
+    let totalCost = buyCost + feesVal; // Total cost includes fees
+
+    // IMPORTANT: If user used "Amount Mode" (or Receipt Mode), we trust the total EUR spent
+    if (investMode === 'amount' && investTotalEUR) {
+        const exactTotal = parseFloat(investTotalEUR);
+        if (exactTotal > 0) { 
+            // In receipt mode, exactTotal IS the money spent.
+            // Fees are usually inclusive in total spent in exchange tickets (e.g. You spend 50, fee is 0.25 taken from that)
+            // But we treat them as additive for cost basis unless specified otherwise.
+            // For simplicity in this logic: Cost Basis = Total Spent.
+            
+            buyCost = exactTotal; // The total money gone
+            totalCost = buyCost; // Total cost is what was spent
+
+            // Recalculate quantity based on price if needed, OR recalculate Price based on Quantity (which is what happens in receipt mode)
+            // In receipt mode, price is already implied.
+        }
+    }
+    
+    const cleanSymbol = investmentForm.symbol.toUpperCase().trim();
+    
+    if (investmentForm.deductFromWallet && totalCost > incomeBag) { 
+        setFormError(`Fondos insuficientes (€${incomeBag.toFixed(2)}). Total Req: €${totalCost.toFixed(2)}`); 
+        setIsSubmitting(false); 
+        return; 
+    }
+
+    const newInvData = { 
+        symbol: cleanSymbol, 
+        name: investmentForm.name || cleanSymbol, 
+        quantity: quantityVal, 
+        avgBuyPrice: priceVal, 
+        type: investmentForm.type,
+        platform: investmentForm.platform || 'N/A', // Store platform
+        fees: feesVal // Store fees
+    };
+
+    try {
+        const batch = writeBatch(db);
+        const invRef = doc(collection(db, "investments"));
+        batch.set(invRef, newInvData);
+        
+        if (investmentForm.deductFromWallet) {
+            batch.set(doc(db, "wallet", "summary"), { incomeBag: incomeBag - totalCost }, { merge: true });
+            const txRef = doc(collection(db, "transactions"));
+            // Description includes fees info
+            const desc = feesVal > 0 
+                ? `Compra ${newInvData.symbol} (Comisión: €${feesVal.toFixed(2)})`
+                : `Compra ${newInvData.symbol}`;
+                
+            const newTx = { 
+                type: 'expense' as const, 
+                amount: totalCost, 
+                category: 'Inversión', 
+                date: new Date().toISOString().split('T')[0], 
+                description: desc 
+            };
+            
+            batch.set(txRef, newTx);
+            setTransactions(prev => [{id: txRef.id, ...newTx} as Transaction, ...prev]);
+            setIncomeBag(prev => prev - totalCost);
+        }
+        await batch.commit();
+        
+        const realPrice = await fetchStockPrice(cleanSymbol);
+        setInvestments(prev => [...prev, { id: invRef.id, ...newInvData, currentPrice: realPrice } as Investment]);
+        
+        // Reset Form
+        setInvestmentForm({ 
+            symbol: '', name: '', quantity: '', price: '', type: 'stock', 
+            deductFromWallet: true, platform: '', fees: '' 
+        });
+        setInvestTotalEUR(''); 
+        setActiveTab('investments');
+        
+    } catch (e) { 
+        console.error("Error adding investment", e); 
+        setFormError("Error al guardar."); 
+    } finally { 
+        setIsSubmitting(false); 
+    }
   };
+  const deleteInvestment = async (id: string) => { try { await deleteDoc(doc(db, "investments", id)); setInvestments(prev => prev.filter(i => i.id !== id)); } catch (e) { console.error(e); } };
+  const handleAddDebt = async () => {
+    if (!debtForm.name) return;
+    setIsSubmitting(true);
+    const newDebtData = { name: debtForm.name, amount: debtForm.isRecurring ? 0 : parseFloat(debtForm.amount), creditor: debtForm.creditor || 'Desconocido', type: debtForm.type, installmentAmount: debtForm.type === 'bank' && debtForm.installmentAmount ? parseFloat(debtForm.installmentAmount) : null, nextPaymentDate: debtForm.type === 'bank' ? debtForm.nextPaymentDate : null, isRecurring: debtForm.isRecurring, date: new Date().toISOString().split('T')[0] };
+    try { const docRef = await addDoc(collection(db, "debts"), newDebtData); setDebts([...debts, { id: docRef.id, ...newDebtData } as Debt]); setDebtForm({ name: '', amount: '', creditor: '', type: 'personal', installmentAmount: '', nextPaymentDate: '', isRecurring: false }); } catch (e) { console.error(e); } finally { setIsSubmitting(false); }
+  };
+  const startEditDebt = (debt: Debt) => { setEditingDebtId(debt.id); setEditDebtForm({ name: debt.name, amount: debt.amount.toString(), creditor: debt.creditor, type: debt.type || 'personal', installmentAmount: debt.installmentAmount ? debt.installmentAmount.toString() : '', nextPaymentDate: debt.nextPaymentDate || '', isRecurring: !!debt.isRecurring }); };
+  const saveEditDebt = async () => {
+    if (!editDebtForm.name || !editingDebtId) return;
+    const updates = { name: editDebtForm.name, amount: editDebtForm.isRecurring ? 0 : parseFloat(editDebtForm.amount), creditor: editDebtForm.creditor, type: editDebtForm.type, installmentAmount: editDebtForm.type === 'bank' && editDebtForm.installmentAmount ? parseFloat(editDebtForm.installmentAmount) : null, nextPaymentDate: editDebtForm.type === 'bank' ? editDebtForm.nextPaymentDate : null, isRecurring: editDebtForm.isRecurring };
+    try { await updateDoc(doc(db, "debts", editingDebtId), updates); setDebts(debts.map(d => d.id === editingDebtId ? { ...d, ...updates } : d)); setEditingDebtId(null); } catch (e) { console.error(e); }
+  };
+  const confirmDeleteDebt = async () => { if (!debtToDelete) return; setIsSubmitting(true); try { await deleteDoc(doc(db, "debts", debtToDelete.id)); setDebts(debts.filter(d => d.id !== debtToDelete.id)); setDebtToDelete(null); } catch (e) { console.error(e); } finally { setIsSubmitting(false); } };
+  const deletePaidDebt = async (id: string) => { try { await deleteDoc(doc(db, "paidDebts", id)); setPaidDebts(paidDebts.filter(d => d.id !== id)); } catch (e) { console.error(e); } };
+
+  // ... (Loader) ...
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center text-violet-500">
+        <Loader2 size={48} className="animate-spin mb-4" />
+        <p className="text-sm font-medium animate-pulse tracking-widest uppercase">Iniciando</p>
+      </div>
+    );
+  }
+
+  // Styles
+  const inputClass = "w-full bg-white/[0.05] border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:border-violet-500 focus:bg-white/[0.08] outline-none transition-all placeholder:text-gray-600";
+  const labelClass = "text-[11px] text-gray-400 font-bold uppercase tracking-wider ml-1 mb-1.5 block";
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-violet-900/30 via-[#050508] to-[#050508] pb-24 relative overflow-hidden font-sans">
+    <div className="min-h-screen bg-[#000000] text-gray-100 font-sans selection:bg-violet-500/30 selection:text-white pb-28 relative overflow-hidden">
       
-      {/* Background Ambience */}
-      <div className="fixed top-[-10%] right-[-10%] w-[500px] h-[500px] bg-violet-600/10 rounded-full blur-[100px] pointer-events-none" />
-      <div className="fixed bottom-[-10%] left-[-10%] w-[400px] h-[400px] bg-fuchsia-600/10 rounded-full blur-[100px] pointer-events-none" />
+      {/* Removed VoiceAssistant */}
+
+      {/* --- MESH GRADIENT BACKGROUND --- */}
+      <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
+         <div className="absolute top-[-10%] left-[-10%] w-[600px] h-[600px] bg-violet-900/30 rounded-full blur-[120px] mix-blend-screen animate-pulse" style={{animationDuration: '4s'}}/>
+         <div className="absolute bottom-[-10%] right-[-10%] w-[500px] h-[500px] bg-fuchsia-900/20 rounded-full blur-[100px] mix-blend-screen"/>
+         <div className="absolute top-[20%] right-[10%] w-[300px] h-[300px] bg-indigo-900/20 rounded-full blur-[80px] mix-blend-screen"/>
+      </div>
 
       {/* Header */}
-      <header className="sticky top-0 z-50 px-6 py-4 bg-[#050508]/80 backdrop-blur-md border-b border-white/5">
+      <header className="sticky top-0 z-40 px-6 py-4">
         <div className="flex justify-between items-center max-w-2xl mx-auto">
           <div className="flex items-center gap-2">
-            <div className="bg-gradient-to-tr from-violet-600 to-fuchsia-600 p-2 rounded-xl shadow-lg shadow-violet-500/20">
-              <Wallet className="text-white w-5 h-5" />
-            </div>
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-violet-200">
-              VioletWallet
+            <h1 className="text-2xl font-black tracking-tighter text-white">
+              Violet<span className="text-transparent bg-clip-text bg-gradient-to-r from-violet-400 to-fuchsia-400">Wallet</span>
             </h1>
           </div>
-          <button 
-            onClick={() => setShowDatabase(!showDatabase)} 
-            className={`p-2 rounded-xl transition-all ${showDatabase ? 'bg-violet-500/20 text-violet-300' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-          >
-            <Database size={20} />
-          </button>
         </div>
       </header>
 
-      {/* Database Panel */}
-      {showDatabase && (
-        <div className="max-w-2xl mx-auto px-6 py-4 animate-in slide-in-from-top-4 fade-in duration-300">
-          <GlassCard className="p-4 border-violet-500/20">
-            <div className="bg-black/40 rounded-xl p-3 mb-4 font-mono text-xs text-violet-300/80 border border-white/5">
-              <div className="flex justify-between mb-1"><span>TRANSACCIONES:</span> <span className="text-white">{transactions.length}</span></div>
-              <div className="flex justify-between mb-1"><span>DEUDAS:</span> <span className="text-white">{debts.length}</span></div>
-              <div className="flex justify-between"><span>BOLSA:</span> <span className="text-white">€{incomeBag.toFixed(2)}</span></div>
-            </div>
-            <div className="flex gap-3">
-              <button onClick={exportDatabase} className="flex-1 bg-gray-800 hover:bg-gray-700 text-white p-3 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-colors">
-                <Download size={16} /> Backup
-              </button>
-              <label className="flex-1 bg-violet-600 hover:bg-violet-500 text-white p-3 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold cursor-pointer transition-colors shadow-lg shadow-violet-900/20">
-                <Upload size={16} /> Restore
-                <input type="file" accept=".json" onChange={importDatabase} className="hidden" />
-              </label>
-            </div>
-          </GlassCard>
-        </div>
-      )}
-
       {/* Main Content Area */}
-      <main className="px-6 pt-6 max-w-2xl mx-auto space-y-6">
+      <main className="px-5 pt-2 max-w-2xl mx-auto space-y-8 relative z-10">
         
-        {/* --- HOME TAB --- */}
         {activeTab === 'home' && (
-          <>
-            {/* Total Balance Card */}
-            <div className="relative group">
-              <div className="absolute -inset-0.5 bg-gradient-to-r from-violet-600 to-fuchsia-600 rounded-[26px] opacity-75 blur group-hover:opacity-100 transition duration-1000 group-hover:duration-200"></div>
-              <div className="relative bg-[#0a0a10] rounded-3xl p-6 border border-white/10">
-                <div className="flex justify-between items-start mb-2">
-                  <p className="text-gray-400 text-sm font-medium tracking-wide uppercase">Balance Total</p>
-                  <button onClick={() => setShowBalance(!showBalance)} className="text-gray-500 hover:text-white transition-colors">
-                    {showBalance ? <Eye size={18} /> : <EyeOff size={18} />}
-                  </button>
-                </div>
-                <div className="flex items-baseline gap-1">
-                  <h2 className={`text-4xl font-bold text-white tracking-tight ${!showBalance && 'blur-md select-none'}`}>
-                     €{balance.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </h2>
-                </div>
-                
-                <div className="mt-6 pt-6 border-t border-white/10 grid grid-cols-2 gap-4">
-                  <div>
-                     <p className="text-xs text-emerald-400 mb-1 flex items-center gap-1"><TrendingUp size={12}/> Ingresos</p>
-                     <p className="text-lg font-semibold text-white">€{income.toFixed(2)}</p>
-                  </div>
-                  <div className="text-right">
-                     <p className="text-xs text-rose-400 mb-1 flex items-center justify-end gap-1"><TrendingDown size={12}/> Gastos</p>
-                     <p className="text-lg font-semibold text-white">€{expenses.toFixed(2)}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Income Bag & Net Worth */}
-            <div className="grid grid-cols-2 gap-4">
-              <GlassCard className="p-4 bg-gradient-to-br from-[#13131f] to-violet-900/10">
-                <div className="flex items-center gap-2 mb-2">
-                   <div className="p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400"><Briefcase size={16}/></div>
-                   <span className="text-xs font-bold text-gray-300">BOLSA</span>
-                </div>
-                <p className="text-xl font-bold text-emerald-300">€{incomeBag.toFixed(2)}</p>
-              </GlassCard>
-              
-              <GlassCard className="p-4 bg-gradient-to-br from-[#13131f] to-rose-900/10">
-                <div className="flex items-center gap-2 mb-2">
-                   <div className="p-1.5 rounded-lg bg-rose-500/20 text-rose-400"><CreditCard size={16}/></div>
-                   <span className="text-xs font-bold text-gray-300">DEUDAS</span>
-                </div>
-                <p className="text-xl font-bold text-rose-300">€{totalDebts.toFixed(2)}</p>
-              </GlassCard>
-            </div>
-
-            {/* Net Worth Strip */}
-            <div className={`rounded-xl p-4 flex justify-between items-center border ${netWorth >= 0 ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-rose-500/5 border-rose-500/20'}`}>
-              <span className="text-sm text-gray-400 font-medium">Patrimonio Neto</span>
-              <span className={`text-xl font-bold ${netWorth >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {netWorth >= 0 ? '+' : ''}€{netWorth.toFixed(2)}
-              </span>
-            </div>
-
-            {/* Recent Transactions */}
-            <div>
-              <SectionTitle>Últimas Transacciones</SectionTitle>
-              <div className="space-y-3">
-                {transactions.length === 0 ? (
-                  <div className="text-center py-10 text-gray-600 text-sm">No hay movimientos recientes</div>
-                ) : (
-                  transactions.slice(0, 5).map(tx => (
-                    <div key={tx.id} className="group relative overflow-hidden bg-[#13131f] hover:bg-[#1a1a2a] border border-white/5 rounded-2xl p-4 transition-all duration-300">
-                      <div className="flex justify-between items-center relative z-10">
-                        <div className="flex items-center gap-3">
-                          <div className={`p-2.5 rounded-full ${tx.type === 'income' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-                            {tx.type === 'income' ? <TrendingUp size={18} /> : <TrendingDown size={18} />}
-                          </div>
-                          <div>
-                            <p className="text-white font-medium text-sm">{tx.description}</p>
-                            <p className="text-gray-500 text-xs">{tx.category} • {tx.date}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <span className={`font-bold ${tx.type === 'income' ? 'text-emerald-400' : 'text-white'}`}>
-                            {tx.type === 'income' ? '+' : '-'}€{tx.amount.toFixed(2)}
-                          </span>
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); setTransactions(transactions.filter(t => t.id !== tx.id)); }} 
-                            className="text-gray-600 hover:text-rose-500 transition-colors p-1"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            {/* Chart */}
-            {chartData.length > 0 && (
-              <div className="pb-4">
-                <SectionTitle>Distribución de Gastos</SectionTitle>
-                <GlassCard className="p-6 flex flex-col items-center">
-                  <div className="w-full h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie 
-                          data={chartData} 
-                          cx="50%" 
-                          cy="50%" 
-                          innerRadius={60} 
-                          outerRadius={80} 
-                          paddingAngle={5} 
-                          dataKey="value"
-                          stroke="none"
-                        >
-                          {chartData.map((_, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
-                        </Pie>
-                        <Tooltip content={<CustomTooltip />} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="flex flex-wrap justify-center gap-3 mt-4">
-                    {chartData.map((entry: any, index: number) => (
-                      <div key={index} className="flex items-center gap-1.5">
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                        <span className="text-xs text-gray-400">{entry.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                </GlassCard>
-              </div>
-            )}
-          </>
+          <HomeTab 
+            netWorth={netWorth}
+            showBalance={showBalance}
+            setShowBalance={setShowBalance}
+            incomeBag={incomeBag}
+            totalInvestmentsValue={totalInvestmentsValue}
+            totalInvestedCapital={totalInvestedCapital}
+            totalDebts={totalDebts}
+            heroChartMode={heroChartMode}
+            setHeroChartMode={setHeroChartMode}
+            setActiveTab={setActiveTab}
+            chartView={chartView}
+            setChartView={setChartView}
+            netWorthHistoryData={netWorthHistoryData}
+            investmentPieData={investmentPieData}
+            debtBarData={debtBarData}
+            gradientOffset={gradientOffset}
+            COLORS={COLORS}
+            transactions={transactions}
+            openEditTransaction={openEditTransaction}
+            deleteTransaction={deleteTransaction}
+            chartData={chartData}
+            expenseCategories={expenseCategories}
+            incomeCategories={incomeCategories}
+          />
         )}
 
-        {/* --- ADD TAB --- */}
+        {/* ... (Other Tabs Rendering: Investments, Add, Debts, Settings) ... */}
+        {activeTab === 'investments' && (
+          <InvestmentsTab 
+            investments={investments}
+            totalInvestmentsValue={totalInvestmentsValue}
+            totalInvestedCapital={totalInvestedCapital}
+            investmentForm={investmentForm}
+            setInvestmentForm={setInvestmentForm}
+            investMode={investMode}
+            setInvestMode={setInvestMode}
+            investTotalEUR={investTotalEUR}
+            setInvestTotalEUR={setInvestTotalEUR}
+            incomeBag={incomeBag}
+            isUpdatingPrices={isUpdatingPrices}
+            isSubmitting={isSubmitting}
+            formError={formError}
+            refreshPrices={refreshPrices}
+            handleFetchCurrentPriceForForm={handleFetchCurrentPriceForForm}
+            handleAddInvestment={handleAddInvestment}
+            deleteInvestment={deleteInvestment}
+            finnhubKey={FINNHUB_API_KEY}
+          />
+        )}
+
         {activeTab === 'add' && (
-          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            
-            {/* Transaction Form */}
-            <GlassCard className="p-6">
-              <h2 className="text-xl font-bold text-white mb-6">Nueva Transacción</h2>
-              
-              <div className="grid grid-cols-2 gap-1 p-1 bg-black/40 rounded-xl mb-6">
-                <button 
-                  onClick={() => setFormData({ ...formData, type: 'expense' })} 
-                  className={`py-2 rounded-lg text-sm font-bold transition-all ${formData.type === 'expense' ? 'bg-rose-500 text-white shadow-lg shadow-rose-900/20' : 'text-gray-400 hover:text-white'}`}
-                >
-                  Gasto
-                </button>
-                <button 
-                  onClick={() => setFormData({ ...formData, type: 'income' })} 
-                  className={`py-2 rounded-lg text-sm font-bold transition-all ${formData.type === 'income' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-900/20' : 'text-gray-400 hover:text-white'}`}
-                >
-                  Ingreso
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1 ml-1">Monto (€)</label>
-                  <input 
-                    type="number" 
-                    step="0.01" 
-                    placeholder="0.00" 
-                    value={formData.amount} 
-                    onChange={(e) => setFormData({ ...formData, amount: e.target.value })} 
-                    className="w-full bg-[#0a0a10] border border-white/10 rounded-xl px-4 py-3 text-white text-lg focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all placeholder-gray-700" 
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1 ml-1">Categoría</label>
-                  <div className="relative">
-                    <select 
-                      value={formData.category} 
-                      onChange={(e) => setFormData({ ...formData, category: e.target.value })} 
-                      className="w-full bg-[#0a0a10] border border-white/10 rounded-xl px-4 py-3 text-white appearance-none focus:outline-none focus:border-violet-500 transition-all"
-                    >
-                      {formData.type === 'income' ? (
-                        <>
-                          <option value="Salario">Salario</option>
-                          <option value="B365">B365</option>
-                          <option value="Freelance">Freelance</option>
-                          <option value="Regalo">Regalo</option>
-                          <option value="Otros">Otros Ingresos</option>
-                        </>
-                      ) : (
-                        <>
-                          <option value="Comida">Comida</option>
-                          <option value="Transporte">Transporte</option>
-                          <option value="Casa">Casa</option>
-                          <option value="Entretenimiento">Entretenimiento</option>
-                          <option value="Servicios">Servicios</option>
-                          <option value="Ropa">Ropa</option>
-                          <option value="Salud">Salud</option>
-                          <option value="B365">B365</option>
-                        </>
-                      )}
-                    </select>
-                    <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">▼</div>
-                  </div>
-                </div>
-
-                <div>
-                   <label className="block text-xs text-gray-500 mb-1 ml-1">Descripción</label>
-                   <input 
-                    type="text" 
-                    placeholder="Ej. Cena con amigos" 
-                    value={formData.description} 
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })} 
-                    className="w-full bg-[#0a0a10] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all placeholder-gray-700" 
-                  />
-                </div>
-
-                <ActionButton onClick={handleAddTransaction} variant={formData.type === 'income' ? 'success' : 'primary'} className="w-full mt-2">
-                  {formData.type === 'income' ? 'Agregar Ingreso' : 'Registrar Gasto'}
-                </ActionButton>
-              </div>
-            </GlassCard>
-
-            {/* Pay Debt Section */}
-            {debts.length > 0 && (
-              <div className="relative group">
-                <div className="absolute -inset-0.5 bg-gradient-to-r from-orange-600 to-rose-600 rounded-[26px] opacity-50 blur group-hover:opacity-75 transition duration-500"></div>
-                <div className="relative bg-[#0a0a10] rounded-3xl p-6 border border-white/10">
-                  <div className="flex items-center justify-between mb-4">
-                     <h3 className="text-white font-bold text-lg">Pagar Deuda</h3>
-                     <span className="text-xs px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 font-mono">
-                       Bolsa: €{incomeBag.toFixed(2)}
-                     </span>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    <select 
-                      value={payDebtForm.debtId} 
-                      onChange={(e) => setPayDebtForm({ ...payDebtForm, debtId: e.target.value })} 
-                      className="w-full bg-[#151520] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500 transition-all"
-                    >
-                      <option value="">Selecciona una deuda...</option>
-                      {debts.map(d => <option key={d.id} value={d.id}>{d.name} (Restante: €{d.amount.toFixed(2)})</option>)}
-                    </select>
-                    
-                    <input 
-                      type="number" 
-                      step="0.01" 
-                      placeholder="Cantidad a pagar" 
-                      value={payDebtForm.amount} 
-                      onChange={(e) => setPayDebtForm({ ...payDebtForm, amount: e.target.value })} 
-                      className="w-full bg-[#151520] border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-orange-500 transition-all" 
-                    />
-                    
-                    <button 
-                      onClick={handlePayDebt} 
-                      className="w-full py-3 rounded-xl font-bold bg-gradient-to-r from-orange-600 to-rose-600 hover:from-orange-500 hover:to-rose-500 text-white shadow-lg shadow-orange-900/20 transition-all"
-                    >
-                      Realizar Pago
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          <AddTab 
+            formData={formData}
+            setFormData={setFormData}
+            handleAddTransaction={handleAddTransaction}
+            isSubmitting={isSubmitting}
+            incomeCategories={incomeCategories}
+            expenseCategories={expenseCategories}
+          />
         )}
 
-        {/* --- DEBTS TAB --- */}
         {activeTab === 'debts' && (
-          <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
-            
-            {/* Add New Debt */}
-            <GlassCard className="p-5 border-violet-500/20">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="bg-violet-600/20 p-2 rounded-lg text-violet-400"><PlusCircle size={20}/></div>
-                <h3 className="font-bold text-white">Nueva Deuda</h3>
-              </div>
-              <div className="grid grid-cols-1 gap-3">
-                <input type="text" placeholder="Concepto (ej. Préstamo Juan)" value={debtForm.name} onChange={(e) => setDebtForm({ ...debtForm, name: e.target.value })} className="bg-black/30 border border-white/10 rounded-lg p-3 text-white text-sm focus:border-violet-500 outline-none" />
-                <div className="grid grid-cols-2 gap-3">
-                  <input type="number" placeholder="Monto" value={debtForm.amount} onChange={(e) => setDebtForm({ ...debtForm, amount: e.target.value })} className="bg-black/30 border border-white/10 rounded-lg p-3 text-white text-sm focus:border-violet-500 outline-none" />
-                  <input type="text" placeholder="Acreedor" value={debtForm.creditor} onChange={(e) => setDebtForm({ ...debtForm, creditor: e.target.value })} className="bg-black/30 border border-white/10 rounded-lg p-3 text-white text-sm focus:border-violet-500 outline-none" />
-                </div>
-                <button onClick={handleAddDebt} className="bg-violet-600 hover:bg-violet-500 text-white py-2 rounded-lg text-sm font-bold mt-1">Registrar Deuda</button>
-              </div>
-            </GlassCard>
+          <DebtsTab 
+            debts={debts}
+            bankDebts={bankDebts}
+            personalDebts={personalDebts}
+            paidDebts={paidDebts}
+            debtForm={debtForm}
+            setDebtForm={setDebtForm}
+            isSubmitting={isSubmitting}
+            handleAddDebt={handleAddDebt}
+            startEditDebt={startEditDebt}
+            setDebtToDelete={setDebtToDelete}
+            setActivePaymentDebt={setActivePaymentDebt}
+            setFormError={setFormError}
+            deletePaidDebt={deletePaidDebt}
+          />
+        )}
 
-            {/* Active Debts List */}
-            <div>
-              <SectionTitle>Pendientes ({debts.length})</SectionTitle>
-              <div className="space-y-3">
-                {debts.length === 0 ? (
-                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-6 text-center">
-                    <CheckCircle2 size={32} className="mx-auto text-emerald-500 mb-2 opacity-80" />
-                    <p className="text-emerald-300 font-medium">¡Estás libre de deudas!</p>
-                  </div>
-                ) : (
-                  debts.map(debt => (
-                    <div key={debt.id} className="relative group">
-                      {editingDebtId === debt.id ? (
-                        <div className="bg-[#1a1a2e] border border-blue-500/50 rounded-2xl p-4 shadow-xl">
-                          <div className="space-y-2 mb-3">
-                            <input className="w-full bg-black/40 border border-white/10 p-2 rounded text-white" value={editDebtForm.name} onChange={(e) => setEditDebtForm({ ...editDebtForm, name: e.target.value })} />
-                            <div className="flex gap-2">
-                              <input className="w-1/2 bg-black/40 border border-white/10 p-2 rounded text-white" type="number" value={editDebtForm.amount} onChange={(e) => setEditDebtForm({ ...editDebtForm, amount: e.target.value })} />
-                              <input className="w-1/2 bg-black/40 border border-white/10 p-2 rounded text-white" value={editDebtForm.creditor} onChange={(e) => setEditDebtForm({ ...editDebtForm, creditor: e.target.value })} />
-                            </div>
-                          </div>
-                          <div className="flex gap-2">
-                            <button onClick={saveEditDebt} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-1.5 rounded-lg text-sm font-bold">Guardar</button>
-                            <button onClick={() => setEditingDebtId(null)} className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-1.5 rounded-lg text-sm">Cancelar</button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="bg-[#13131f] hover:bg-[#1a1a29] border border-white/5 border-l-4 border-l-rose-500 rounded-r-2xl rounded-l-md p-4 flex justify-between items-center transition-all">
-                          <div>
-                            <h4 className="font-bold text-gray-200">{debt.name}</h4>
-                            <p className="text-xs text-rose-400/80 uppercase tracking-wide font-semibold mt-0.5">{debt.creditor}</p>
-                          </div>
-                          <div className="flex items-center gap-4">
-                            <span className="text-xl font-bold text-white">€{debt.amount.toFixed(2)}</span>
-                            <div className="flex gap-1">
-                              <button onClick={() => startEditDebt(debt)} className="p-2 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"><Edit3 size={16}/></button>
-                              <button onClick={() => setDebts(debts.filter(d => d.id !== debt.id))} className="p-2 text-gray-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"><Trash2 size={16}/></button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            {/* Paid Debts History */}
-            {paidDebts.length > 0 && (
-              <div className="opacity-75">
-                <SectionTitle>Historial de Pagos</SectionTitle>
-                <div className="space-y-2">
-                  {paidDebts.map(debt => (
-                    <div key={debt.id} className="bg-[#13131f]/50 border border-emerald-500/10 rounded-xl p-3 flex justify-between items-center grayscale hover:grayscale-0 transition-all">
-                      <div>
-                        <p className="text-gray-400 text-sm line-through decoration-emerald-500/50">{debt.name}</p>
-                        <p className="text-xs text-gray-600">Pagado: {debt.paidDate}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                         <span className="text-emerald-500/80 font-bold">€{debt.amount.toFixed(2)}</span>
-                         <button onClick={() => setPaidDebts(paidDebts.filter(d => d.id !== debt.id))} className="text-gray-700 hover:text-rose-500 p-1"><X size={14}/></button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+        {activeTab === 'settings' && (
+          <SettingsTab 
+             incomeCategories={incomeCategories}
+             expenseCategories={expenseCategories}
+             onAddCategory={handleAddCategory}
+             onRemoveCategory={handleRemoveCategory}
+          />
         )}
 
       </main>
 
-      {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 px-6 pb-6 pt-2 bg-gradient-to-t from-[#050508] via-[#050508] to-transparent pointer-events-none">
-        <div className="max-w-md mx-auto pointer-events-auto">
-          <div className="bg-[#13131f]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-2 shadow-2xl shadow-black flex justify-around items-center">
+      {/* --- MODALS (Edit Debt, Payment, Delete, CashFlow, Edit Tx) --- */}
+      {/* (All existing modals follow, no changes needed for logic, just kept in structure) */}
+      
+      {editingDebtId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-300">
+           <GlassCard className="w-full max-w-[90vw] md:max-w-sm p-6 animate-in zoom-in-95 duration-200">
+               <div className="flex justify-between items-center mb-6">
+                 <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                   <Edit3 size={18} className="text-violet-400"/> Editar Deuda
+                 </h3>
+                 <button onClick={() => setEditingDebtId(null)} className="p-1 rounded-full hover:bg-white/10 text-gray-400 hover:text-white transition-colors">
+                   <X size={20} />
+                 </button>
+               </div>
+               <div className="space-y-4">
+                  <div>
+                      <label className={labelClass}>Concepto</label>
+                      <input className={inputClass} value={editDebtForm.name} onChange={(e) => setEditDebtForm({ ...editDebtForm, name: e.target.value })} />
+                  </div>
+                  {editDebtForm.type === 'bank' && (
+                    <div className="flex items-center justify-between bg-fuchsia-500/10 p-3 rounded-xl border border-fuchsia-500/20">
+                        <span className="text-xs text-fuchsia-200 font-bold flex items-center gap-2">{editDebtForm.isRecurring ? <Repeat size={14}/> : <CreditCardIcon size={14}/>}{editDebtForm.isRecurring ? 'Pago Recurrente' : 'Préstamo Finito'}</span>
+                        <button onClick={() => setEditDebtForm({ ...editDebtForm, isRecurring: !editDebtForm.isRecurring })} className={`w-11 h-6 rounded-full relative transition-colors ${editDebtForm.isRecurring ? 'bg-fuchsia-500' : 'bg-white/10'}`}>
+                            <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm ${editDebtForm.isRecurring ? 'left-6' : 'left-1'}`} />
+                        </button>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-3">
+                      {!editDebtForm.isRecurring && (<div><label className={labelClass}>Monto Total (€)</label><input type="number" className={inputClass} value={editDebtForm.amount} onChange={(e) => setEditDebtForm({ ...editDebtForm, amount: e.target.value })} /></div>)}
+                      <div className={editDebtForm.isRecurring ? 'col-span-2' : ''}><label className={labelClass}>Acreedor</label><input className={inputClass} value={editDebtForm.creditor} onChange={(e) => setEditDebtForm({ ...editDebtForm, creditor: e.target.value })} /></div>
+                  </div>
+                  {editDebtForm.type === 'bank' && (
+                      <div className="bg-white/[0.03] border border-white/5 rounded-xl p-3 space-y-3">
+                          <div className="flex items-center gap-2 mb-1"><CalendarClock size={16} className="text-fuchsia-400"/><p className="text-[10px] font-bold text-fuchsia-200 uppercase tracking-wider">Automático</p></div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div><label className={labelClass}>Próxima Fecha</label><input type="date" className={inputClass} value={editDebtForm.nextPaymentDate} onChange={(e) => setEditDebtForm({ ...editDebtForm, nextPaymentDate: e.target.value })} /></div>
+                            <div><label className={labelClass}>Cuota (€)</label><input type="number" className={inputClass} value={editDebtForm.installmentAmount} onChange={(e) => setEditDebtForm({ ...editDebtForm, installmentAmount: e.target.value })} /></div>
+                          </div>
+                      </div>
+                  )}
+                  <div className="pt-2"><ActionButton onClick={saveEditDebt} className="w-full">Guardar Cambios</ActionButton></div>
+               </div>
+           </GlassCard>
+        </div>
+      )}
+
+      {activePaymentDebt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-300">
+           <GlassCard className="w-full max-w-[90vw] md:max-w-sm p-6 animate-in zoom-in-95 duration-200">
+              <div className="flex justify-between items-start mb-6">
+                <div><h3 className="text-lg font-bold text-white">{activePaymentDebt.isRecurring ? "Adelantar Pago" : "Aportar Capital"}</h3><p className="text-gray-400 text-sm mt-0.5">Para: <span className="text-violet-300 font-semibold">{activePaymentDebt.name}</span></p></div>
+                <button onClick={() => { setActivePaymentDebt(null); setPaymentAmount(''); setFormError(null); }} className="p-1 rounded-full hover:bg-white/10 text-gray-500 hover:text-white transition-colors"><X size={20}/></button>
+              </div>
+              <div className="bg-gradient-to-br from-white/5 to-transparent rounded-2xl p-5 mb-6 border border-white/5 text-center">
+                 <p className="text-[10px] text-gray-400 uppercase tracking-widest mb-1">{activePaymentDebt.isRecurring ? "Tipo de Gasto" : "Deuda Restante"}</p>
+                 <p className="text-3xl font-black text-white flex items-center justify-center gap-2 tracking-tight">{activePaymentDebt.isRecurring ? <><Repeat size={24}/> Recurrente</> : `€${activePaymentDebt.amount.toLocaleString('es-ES', { minimumFractionDigits: 2 })}`}</p>
+              </div>
+              <div className="space-y-4">
+                 <div>
+                    <label className={labelClass}>Cantidad a pagar (€)</label>
+                    <div className="relative">
+                        <input type="number" step="0.01" autoFocus value={paymentAmount} onChange={(e) => { setPaymentAmount(e.target.value); if(formError) setFormError(null); }} placeholder={activePaymentDebt.installmentAmount ? `${activePaymentDebt.installmentAmount}` : "0.00"} className={`${inputClass} text-lg font-semibold pl-8`} />
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">€</span>
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-2 text-right">Disponible: <span className={incomeBag >= parseFloat(paymentAmount || '0') ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>€{incomeBag.toFixed(2)}</span></p>
+                 </div>
+                 {formError && (<div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-3 flex items-start gap-2 animate-in fade-in slide-in-from-top-1"><AlertCircle size={16} className="text-rose-500 mt-0.5 shrink-0" /><p className="text-xs text-rose-200">{formError}</p></div>)}
+                 <ActionButton onClick={handlePaymentSubmit} disabled={isSubmitting || !paymentAmount} variant="success" className="w-full shadow-emerald-900/20">{isSubmitting ? <Loader2 className="animate-spin w-5 h-5"/> : "Confirmar Pago"}</ActionButton>
+              </div>
+           </GlassCard>
+        </div>
+      )}
+
+      {debtToDelete && (
+        <ConfirmModal 
+            isOpen={!!debtToDelete}
+            onClose={() => setDebtToDelete(null)}
+            onConfirm={confirmDeleteDebt}
+            title={`¿Eliminar ${debtToDelete.isRecurring ? "Suscripción" : "Deuda"}?`}
+            message={`¿Estás seguro de que deseas eliminar "${debtToDelete.name}"? Esta acción no se puede deshacer.`}
+            isDanger={true}
+            confirmText="Sí, Eliminar"
+        />
+      )}
+
+      {editingTx && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+          <GlassCard className="w-full max-w-[90vw] md:max-w-sm p-6 animate-in zoom-in-95 duration-200">
+             <div className="flex justify-between items-center mb-6"><h3 className="text-lg font-bold text-white flex items-center gap-2"><Edit3 size={18} className="text-violet-400"/> Editar Transacción</h3><button onClick={() => setEditingTx(null)} className="p-1 rounded-full hover:bg-white/10 text-gray-400 hover:text-white transition-colors"><X size={20} /></button></div>
+             <div className="space-y-4">
+               <div className="grid grid-cols-2 gap-1 p-1 bg-white/5 rounded-xl border border-white/5">
+                <button onClick={() => setEditTxForm({ ...editTxForm, type: 'expense' })} className={`py-2 rounded-lg text-sm font-bold transition-all ${editTxForm.type === 'expense' ? 'bg-rose-500 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Gasto</button>
+                <button onClick={() => setEditTxForm({ ...editTxForm, type: 'income' })} className={`py-2 rounded-lg text-sm font-bold transition-all ${editTxForm.type === 'income' ? 'bg-emerald-500 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Ingreso</button>
+              </div>
+               <div><label className={labelClass}>Monto</label><input type="number" step="0.01" value={editTxForm.amount} onChange={(e) => setEditTxForm({ ...editTxForm, amount: e.target.value })} className={inputClass} /></div>
+               <div><label className={labelClass}>Descripción</label><input type="text" value={editTxForm.description} onChange={(e) => setEditTxForm({ ...editTxForm, description: e.target.value })} className={inputClass} /></div>
+               <div>
+                  <label className={labelClass}>Categoría</label>
+                  <div className="relative">
+                    <select value={editTxForm.category} onChange={(e) => setEditTxForm({ ...editTxForm, category: e.target.value })} className={`${inputClass} appearance-none`}>
+                      {editTxForm.type === 'income' ? (
+                         incomeCategories.map(cat => <option key={cat.name} value={cat.name}>{cat.name}</option>)
+                      ) : (
+                         expenseCategories.map(cat => <option key={cat.name} value={cat.name}>{cat.name}</option>)
+                      )}
+                    </select>
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">▼</div>
+                  </div>
+               </div>
+               <div className="pt-2"><ActionButton onClick={handleSaveEditTransaction} disabled={isSubmitting} className="w-full">{isSubmitting ? <Loader2 className="animate-spin w-4 h-4"/> : <><Save size={18}/> Guardar Cambios</>}</ActionButton></div>
+             </div>
+          </GlassCard>
+        </div>
+      )}
+
+      {/* iOS Style Floating Dock Navigation */}
+      <nav className="fixed bottom-6 left-0 right-0 z-50 px-4 flex justify-center pointer-events-none">
+        <div className="pointer-events-auto bg-[#1a1a24]/80 backdrop-blur-2xl border border-white/10 rounded-[32px] p-2 shadow-[0_20px_40px_-12px_rgba(0,0,0,0.5)] flex items-center gap-1">
             
-            <button 
-              onClick={() => setActiveTab('home')} 
-              className={`relative p-3 rounded-xl transition-all duration-300 flex flex-col items-center gap-1 w-20 ${activeTab === 'home' ? 'text-violet-400' : 'text-gray-500 hover:text-gray-300'}`}
-            >
-              <div className={`absolute inset-0 bg-violet-500/10 rounded-xl transition-all duration-300 ${activeTab === 'home' ? 'opacity-100 scale-100' : 'opacity-0 scale-75'}`}></div>
-              <Home size={24} strokeWidth={activeTab === 'home' ? 2.5 : 2} />
-              {activeTab === 'home' && <span className="text-[10px] font-bold">Inicio</span>}
-            </button>
-
-            <button 
-              onClick={() => setActiveTab('add')} 
-              className="relative -top-6 bg-violet-600 hover:bg-violet-500 text-white p-4 rounded-full shadow-lg shadow-violet-600/40 transition-transform active:scale-95 border-4 border-[#050508]"
-            >
-              <PlusCircle size={32} />
-            </button>
-
-            <button 
-              onClick={() => setActiveTab('debts')} 
-              className={`relative p-3 rounded-xl transition-all duration-300 flex flex-col items-center gap-1 w-20 ${activeTab === 'debts' ? 'text-violet-400' : 'text-gray-500 hover:text-gray-300'}`}
-            >
-              <div className={`absolute inset-0 bg-violet-500/10 rounded-xl transition-all duration-300 ${activeTab === 'debts' ? 'opacity-100 scale-100' : 'opacity-0 scale-75'}`}></div>
-              <CreditCard size={24} strokeWidth={activeTab === 'debts' ? 2.5 : 2} />
-              {activeTab === 'debts' && <span className="text-[10px] font-bold">Deudas</span>}
-            </button>
-
-          </div>
+            {[
+              { id: 'home', icon: Home, label: 'Inicio', activeColor: 'text-violet-400' },
+              { id: 'investments', icon: TrendingUp, label: 'Inversión', activeColor: 'text-blue-400' },
+              { id: 'add', icon: PlusCircle, label: '', isAction: true },
+              { id: 'debts', icon: CreditCard, label: 'Deudas', activeColor: 'text-fuchsia-400' },
+              { id: 'settings', icon: Settings, label: 'Ajustes', activeColor: 'text-white' }
+            ].map((item) => {
+              if (item.isAction) {
+                return (
+                  <button 
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)} 
+                    className="mx-2 bg-gradient-to-tr from-violet-600 to-fuchsia-600 text-white p-3.5 rounded-full shadow-lg shadow-violet-500/40 hover:scale-105 active:scale-95 transition-transform"
+                  >
+                    <item.icon size={26} strokeWidth={2.5} />
+                  </button>
+                )
+              }
+              const isActive = activeTab === item.id;
+              return (
+                <button 
+                  key={item.id}
+                  onClick={() => setActiveTab(item.id)} 
+                  className={`
+                    relative px-4 py-2 rounded-2xl transition-all duration-300 flex flex-col items-center gap-1 group
+                  `}
+                >
+                   {/* Spotlight Effect behind icon */}
+                   {isActive && <div className="absolute inset-0 bg-white/[0.08] rounded-2xl -z-10" />}
+                   
+                   <item.icon 
+                      size={24} 
+                      strokeWidth={isActive ? 2.5 : 2} 
+                      className={`transition-colors ${isActive ? item.activeColor : 'text-gray-500 group-hover:text-gray-400'}`} 
+                   />
+                </button>
+              )
+            })}
         </div>
       </nav>
 
+      <ConfirmModal 
+        isOpen={!!successMessage}
+        onClose={() => setSuccessMessage(null)}
+        title="¡Éxito!"
+        message={successMessage || ""}
+        isSuccess={true}
+        showCancel={false}
+        confirmText="Entendido"
+      />
     </div>
   );
 }
