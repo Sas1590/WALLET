@@ -8,6 +8,7 @@ interface SettingsTabProps {
   expenseCategories: Category[];
   onAddCategory: (type: 'income' | 'expense', name: string, color: string) => void;
   onRemoveCategory: (type: 'income' | 'expense', name: string) => void;
+  onMigrateLocalData: () => void;
 }
 
 const NEON_COLORS = [
@@ -55,7 +56,8 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   incomeCategories,
   expenseCategories,
   onAddCategory,
-  onRemoveCategory
+  onRemoveCategory,
+  onMigrateLocalData
 }) => {
   const [newIncomeCat, setNewIncomeCat] = useState('');
   const [newExpenseCat, setNewExpenseCat] = useState('');
@@ -175,6 +177,24 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 ))}
             </div>
         </div>
+      </GlassCard>
+
+      <GlassCard className="p-5 border-violet-500/20">
+        <div className="flex items-center gap-2 mb-4">
+            <div className="bg-gray-700/30 p-2 rounded-lg text-gray-200">
+                <Settings size={20} />
+            </div>
+            <h3 className="text-lg font-bold text-white">Datos Locales</h3>
+        </div>
+        <p className="text-sm text-gray-400 mb-4">
+          Si usabas la aplicación antes de la integración con Firebase, puedes migrar tus datos locales (transacciones, deudas, etc.) a la nube.
+        </p>
+        <ActionButton 
+          icon={<Check size={18} />} 
+          label="Migrar Datos a Firebase" 
+          onClick={onMigrateLocalData} 
+          variant="primary" 
+        />
       </GlassCard>
 
       <div className="text-center">

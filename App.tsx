@@ -114,6 +114,7 @@ export default function FinanceApp() {
   const [chartView, setChartView] = useState<'daily' | 'monthly' | 'yearly'>('daily');
   const [showCashFlow, setShowCashFlow] = useState(false); 
   const [formError, setFormError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   
   // Success Modal State
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -199,6 +200,66 @@ export default function FinanceApp() {
            await setDoc(doc(db, "settings", "categories"), { expense: newCatsList }, { merge: true });
         } catch (e) { console.error("Error removing category", e); }
      }
+  };
+
+  const handleMigrateLocalData = async () => {
+    try {
+      setIsLoading(true);
+      setFetchError(null);
+      
+      const localTransactions = JSON.parse(localStorage.getItem('violet_transactions') || '[]');
+      const localDebts = JSON.parse(localStorage.getItem('violet_debts') || '[]');
+      const localPaidDebts = JSON.parse(localStorage.getItem('violet_paidDebts') || '[]');
+      const localIncomeBag = JSON.parse(localStorage.getItem('violet_incomeBag') || '0');
+      
+      const batch = writeBatch(db);
+      
+      // Migrate transactions
+      localTransactions.forEach((tx: any) => {
+        const { id, ...txData } = tx;
+        const docRef = id ? doc(db, 'transactions', String(id)) : doc(collection(db, 'transactions'));
+        batch.set(docRef, { ...txData, createdAt: txData.createdAt || new Date().toISOString() });
+      });
+      
+      // Migrate debts
+      localDebts.forEach((debt: any) => {
+        const { id, ...debtData } = debt;
+        const docRef = id ? doc(db, 'debts', String(id)) : doc(collection(db, 'debts'));
+        batch.set(docRef, { ...debtData, createdAt: debtData.createdAt || new Date().toISOString() });
+      });
+      
+      // Migrate paid debts
+      localPaidDebts.forEach((debt: any) => {
+        const { id, ...debtData } = debt;
+        const docRef = id ? doc(db, 'paidDebts', String(id)) : doc(collection(db, 'paidDebts'));
+        batch.set(docRef, { ...debtData, createdAt: debtData.createdAt || new Date().toISOString() });
+      });
+      
+      // Update income bag
+      const summaryRef = doc(db, 'wallet', 'summary');
+      batch.set(summaryRef, { incomeBag: Number(localIncomeBag) }, { merge: true });
+      
+      await batch.commit();
+      
+      // Clear local storage after successful migration
+      localStorage.removeItem('violet_transactions');
+      localStorage.removeItem('violet_debts');
+      localStorage.removeItem('violet_paidDebts');
+      localStorage.removeItem('violet_incomeBag');
+      
+      // Refresh data
+      window.location.reload();
+      
+    } catch (error: any) {
+      console.error("Error migrating data:", error);
+      if (error.message?.includes("Missing or insufficient permissions") || error.message?.includes("permissions")) {
+        setFetchError("Error de Permisos al migrar: Ve a Firebase Console -> Firestore Database -> Reglas, y cambia a 'allow read, write: if true;'");
+      } else {
+        setFetchError(`Error al migrar datos: ${error.message || 'Error desconocido'}`);
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Ensure default category in forms is valid when categories change
@@ -294,54 +355,83 @@ export default function FinanceApp() {
         );
 
         const dataPromise = (async () => {
-            const catDoc = await getDoc(doc(db, "settings", "categories"));
-            if (catDoc.exists()) {
-                const data = catDoc.data();
-                if (data.income) setIncomeCategories(data.income);
-                if (data.expense) setExpenseCategories(data.expense);
-            } else {
-                await setDoc(doc(db, "settings", "categories"), { 
-                    income: DEFAULT_INCOME_CATS,
-                    expense: DEFAULT_EXPENSE_CATS
-                });
+            try {
+                const catDoc = await getDoc(doc(db, "settings", "categories"));
+                if (catDoc.exists()) {
+                    const data = catDoc.data();
+                    if (data.income) setIncomeCategories(data.income);
+                    if (data.expense) setExpenseCategories(data.expense);
+                } else {
+                    await setDoc(doc(db, "settings", "categories"), { 
+                        income: DEFAULT_INCOME_CATS,
+                        expense: DEFAULT_EXPENSE_CATS
+                    });
+                }
+            } catch (e) {
+                console.warn("Could not fetch/set categories:", e);
             }
 
-            const walletDoc = await getDoc(doc(db, "wallet", "summary"));
             let currentBag = 0;
-            if (walletDoc.exists()) {
-              currentBag = walletDoc.data().incomeBag || 0;
-              setIncomeBag(currentBag);
-            } else {
-              await setDoc(doc(db, "wallet", "summary"), { incomeBag: 0 });
+            try {
+                const walletDoc = await getDoc(doc(db, "wallet", "summary"));
+                if (walletDoc.exists()) {
+                  currentBag = walletDoc.data().incomeBag || 0;
+                  setIncomeBag(currentBag);
+                } else {
+                  await setDoc(doc(db, "wallet", "summary"), { incomeBag: 0 });
+                }
+            } catch (e) {
+                console.warn("Could not fetch/set wallet summary:", e);
             }
             
-            const txQuery = query(collection(db, "transactions"), orderBy("date", "desc"));
-            const txSnapshot = await getDocs(txQuery);
-            const fetchedTxList = txSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
-            setTransactions(fetchedTxList);
-
-            const debtsSnapshot = await getDocs(collection(db, "debts"));
-            const debtsList = debtsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Debt));
-            setDebts(debtsList);
-            const paidDebtsSnapshot = await getDocs(collection(db, "paidDebts"));
-            const paidDebtsList = paidDebtsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PaidDebt));
-            setPaidDebts(paidDebtsList);
-            const investmentsSnapshot = await getDocs(collection(db, "investments"));
-            const invPromises = investmentsSnapshot.docs.map(async (doc) => {
-                const data = doc.data();
-                const price = await fetchStockPrice(data.symbol || 'USD');
-                return { id: doc.id, ...data, currentPrice: price } as Investment;
-            });
-            const invList = await Promise.all(invPromises);
-            setInvestments(invList);
-            await checkAndProcessAutoPayments(debtsList, currentBag, fetchedTxList);
+            try {
+                const txQuery = query(collection(db, "transactions"));
+                const txSnapshot = await getDocs(txQuery);
+                const fetchedTxList = txSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+                
+                // Sort in memory to avoid hiding docs without a date field
+                fetchedTxList.sort((a, b) => {
+                    const dateA = a.date ? new Date(a.date).getTime() : 0;
+                    const dateB = b.date ? new Date(b.date).getTime() : 0;
+                    return dateB - dateA;
+                });
+                
+                setTransactions(fetchedTxList);
+                
+                const debtsSnapshot = await getDocs(collection(db, "debts"));
+                const debtsList = debtsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Debt));
+                setDebts(debtsList);
+                
+                const paidDebtsSnapshot = await getDocs(collection(db, "paidDebts"));
+                const paidDebtsList = paidDebtsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PaidDebt));
+                setPaidDebts(paidDebtsList);
+                
+                const investmentsSnapshot = await getDocs(collection(db, "investments"));
+                const invPromises = investmentsSnapshot.docs.map(async (doc) => {
+                    const data = doc.data();
+                    const price = await fetchStockPrice(data.symbol || 'USD');
+                    return { id: doc.id, ...data, currentPrice: price } as Investment;
+                });
+                const invList = await Promise.all(invPromises);
+                setInvestments(invList);
+                
+                await checkAndProcessAutoPayments(debtsList, currentBag, fetchedTxList);
+            } catch (e: any) {
+                console.error("Error fetching main data:", e);
+                throw e; // Re-throw to be caught by the outer catch
+            }
         })();
 
         // Race between data fetch and timeout
         await Promise.race([dataPromise, timeoutPromise]);
 
-      } catch (error) {
+      } catch (error: any) {
         console.error("Error fetching data (or timeout):", error);
+        if (error.message?.includes("Missing or insufficient permissions") || error.message?.includes("permissions")) {
+          setFetchError("Error de Permisos: Ve a Firebase Console -> Firestore Database -> Reglas, y cambia a 'allow read, write: if true;'");
+        } else {
+          setFetchError(error.message || "Error fetching data");
+        }
       } finally {
         if (isMounted) setIsLoading(false);
       }
@@ -697,6 +787,14 @@ export default function FinanceApp() {
   return (
     <div className="min-h-screen bg-[#000000] text-gray-100 font-sans selection:bg-violet-500/30 selection:text-white pb-28 relative overflow-hidden">
       
+      {fetchError && (
+        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-red-500/90 text-white px-6 py-3 rounded-xl shadow-2xl backdrop-blur-md border border-red-400/50 flex items-center gap-3">
+          <AlertCircle size={20} />
+          <p className="text-sm font-bold">{fetchError}</p>
+          <button onClick={() => setFetchError(null)} className="p-1 hover:bg-white/20 rounded-md transition-colors"><X size={16} /></button>
+        </div>
+      )}
+
       {/* Removed VoiceAssistant */}
 
       {/* --- MESH GRADIENT BACKGROUND --- */}
@@ -807,6 +905,7 @@ export default function FinanceApp() {
              expenseCategories={expenseCategories}
              onAddCategory={handleAddCategory}
              onRemoveCategory={handleRemoveCategory}
+             onMigrateLocalData={handleMigrateLocalData}
           />
         )}
 
